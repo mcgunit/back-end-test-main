@@ -8,32 +8,59 @@ class Command(BaseCommand):
     help = "Simulate condition when withdrawing refrigerant from a vessel."
 
     def handle(self, *args, **kwargs):
-        Vessel.objects.create(name="Test Vessel", content=50.0)
+        # If vessel with id 1 exists do not just create another one. Instead lets make 3 vessels we can use in this simulation.
+        # As if a company has 3 vessels in stock
+        Vessel.objects.get_or_create(id=1, defaults={"name": f"Vessel_{1}", "content": 50.0})
+        Vessel.objects.get_or_create(id=2, defaults={"name": f"Vessel_{2}", "content": 50.0})
+        Vessel.objects.get_or_create(id=3, defaults={"name": f"Vessel_{3}", "content": 50.0})
+        
         self.stdout.write("Simulating condition...")
         self.run_simulation()
+        
+    def doWithdraw(self, contentToWithdraw=10, user=" "):
+        """
+            Function to do a withdraw. Check the available vessels and notify user if empty or not enough available. 
+        """
+        with transaction.atomic():
+            # Lock all vessels that have content > 0
+            vessels = (
+                Vessel.objects.select_for_update()
+                .filter(content__gt=0)
+                .order_by("id")
+            )
+
+            if not vessels.exists():
+                self.stdout.write(f"For {user} no vessels with content found. Please order new vessels.")
+                return
+
+            for vessel in vessels:
+                if vessel.content >= contentToWithdraw:
+                    vessel.content -= contentToWithdraw
+                    vessel.save()
+                    self.stdout.write( f"{user} withdrew {contentToWithdraw} kg from {vessel.name}. Remaining: {vessel.content} kg")
+                    return
+                else:
+                    used = vessel.content
+                    vessel.content = 0
+                    vessel.save()
+                    self.stdout.write(f"For {user} vessel {vessel.name} ran out ({used} kg withdrawn), using the next vessel.")
+                    contentToWithdraw -= used 
+
+            if contentToWithdraw > 0:
+                self.stdout.write(f"For {user} the vessels ran out of content. Please order new vessels")
+                
 
     def run_simulation(self):
         barrier = threading.Barrier(2)
 
         def user1():
             barrier.wait()
-            with transaction.atomic():
-                vessel = Vessel.objects.select_for_update().get(id=1)
-                if vessel.content <= 0:
-                    self.stdout.write(f"User 1. The vessel you are currently withdrawal from is empty")
-                else:
-                    vessel.content -= 10.0
-                    vessel.save()
-
+            self.doWithdraw(contentToWithdraw=10, user="user1")
+            
+                    
         def user2():
             barrier.wait()
-            with transaction.atomic():
-                vessel = Vessel.objects.select_for_update().get(id=1)
-                if vessel.content <= 0:
-                    self.stdout.write(f"User 2. The vessel you are currently withdrawal from is empty")
-                else:
-                    vessel.content -= 10.0
-                    vessel.save()
+            self.doWithdraw(contentToWithdraw=13, user="user2")
 
         """
             The problem here is that this will cause a race condition. 
@@ -48,5 +75,6 @@ class Command(BaseCommand):
         t2.join()
 
 
-        vessel = Vessel.objects.get(id=1)
-        self.stdout.write(f"Remaining content: {vessel.content} kg")
+        for vessel in Vessel.objects.all():
+            self.stdout.write(f"Remaining content for {vessel.name}: {vessel.content} kg")
+
